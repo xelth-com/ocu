@@ -1,0 +1,27 @@
+{
+  "name": "ocu",
+  "version": "1.0.0",
+  "description": "OCU — a clean, versioned REST API facade for the OPAL courier portal (opal-kurier.de), with a swappable backend driver (headless-browser adapter today, native DB driver tomorrow).",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "main": "dist/server.js",
+  "scripts": {
+    "dev": "tsx watch src/server.ts",
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/server.js",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "fastify": "^4.28.1",
+    "playwright": "^1.48.2"
+  },
+  "devDependencies": {
+    "@types/node": "^20.16.11",
+    "tsx": "^4.19.1",
+    "typescript": "^5.6.3",
+    "vitest": "^2.1.3"
+  }
+}

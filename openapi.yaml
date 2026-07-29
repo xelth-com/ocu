@@ -1,0 +1,368 @@
+openapi: 3.1.0
+info:
+  title: OCU API
+  version: "1.0.0"
+  summary: A clean, versioned REST API for the OPAL courier portal (opal-kurier.de).
+  description: |
+    OCU ("OPAL Courier Unified") is a stable REST facade over the OPAL courier
+    portal, which has no public API of its own.
+
+    The service is built around a **swappable backend driver**: the same REST
+    contract is served today by a headless-browser adapter (`scraper`) that
+    drives the OPAL portal, and can be served tomorrow by a native database
+    driver (`db`) once OPAL adopts the project. **The API contract does not
+    change when the driver changes** — that separation is the entire point.
+
+    Every `Shipment` field below is derived from what a real, in-production
+    scraper already extracts from the portal's shipment detail pages; no field
+    was invented.
+servers:
+  - url: http://localhost:38300
+    description: Local development (default PORT=38300)
+
+security:
+  - bearerAuth: []
+
+tags:
+  - name: system
+    description: Health and metadata (unauthenticated).
+  - name: shipments
+    description: Shipment listing, retrieval and creation.
+
+paths:
+  /v1/health:
+    get:
+      tags: [system]
+      summary: Liveness & metadata
+      description: Unauthenticated. Reports service status, the active driver and version.
+      security: []
+      responses:
+        "200":
+          description: Service is up.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Health"
+
+  /v1/shipments:
+    get:
+      tags: [shipments]
+      summary: List shipments (newest first)
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          description: Maximum number of shipments to return. Default 50, capped at 200.
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 50
+        - name: cursor
+          in: query
+          required: false
+          description: |
+            Opaque pagination token returned as `next_cursor` by a previous call.
+            Treat it as opaque — its encoding is driver-defined. Omit to start
+            from the most recent shipment.
+          schema:
+            type: string
+      responses:
+        "200":
+          description: A page of shipments.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ShipmentList"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "502": { $ref: "#/components/responses/UpstreamError" }
+    post:
+      tags: [shipments]
+      summary: Create a shipment
+      description: |
+        Creates a shipment via the portal's "Neuer Auftrag" form. The response
+        echoes the submitted fields plus the identity assigned by the portal
+        (`ocu_number` / `tracking_number`).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateShipmentInput"
+      responses:
+        "201":
+          description: Shipment created.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Shipment"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "502": { $ref: "#/components/responses/UpstreamError" }
+
+  /v1/shipments/{ocu_number}:
+    get:
+      tags: [shipments]
+      summary: Get a single shipment
+      parameters:
+        - name: ocu_number
+          in: path
+          required: true
+          description: The shipment's `ocu_number` (portal SendungsNr, e.g. "OCU-123456").
+          schema:
+            type: string
+      responses:
+        "200":
+          description: The shipment.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Shipment"
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "502": { $ref: "#/components/responses/UpstreamError" }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: >
+        API key passed as `Authorization: Bearer <key>`. Valid keys are
+        configured server-side via the OCU_API_KEYS environment variable.
+
+  responses:
+    BadRequest:
+      description: The request was malformed (bad parameter, cursor, or body).
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+          example: { error: { code: invalid_request, message: 'Invalid "limit": expected a positive integer, got "abc".' } }
+    Unauthorized:
+      description: Missing or invalid API key.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+          example: { error: { code: unauthorized, message: "Missing or invalid API key." } }
+    NotFound:
+      description: No such resource.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+          example: { error: { code: not_found, message: 'No shipment with ocu_number "OCU-999".' } }
+    UpstreamError:
+      description: >
+        The backend driver could not fulfil the request: portal unreachable,
+        login rejected, or the portal layout changed.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+          example: { error: { code: upstream_portal_error, message: "OPAL portal automation failed: Frame 'optop' not found" } }
+
+  schemas:
+    Health:
+      type: object
+      required: [ok, service, driver, version]
+      properties:
+        ok: { type: boolean, const: true }
+        service: { type: string, const: "ocu-api" }
+        driver:
+          type: string
+          enum: [scraper, db]
+          description: The active backend driver.
+        version:
+          type: string
+          description: The service version (from package.json).
+
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              enum: [unauthorized, invalid_request, not_found, upstream_portal_error, internal_error]
+            message: { type: string }
+
+    ShipmentList:
+      type: object
+      required: [shipments, next_cursor]
+      properties:
+        shipments:
+          type: array
+          items: { $ref: "#/components/schemas/Shipment" }
+        next_cursor:
+          type: [string, "null"]
+          description: Opaque cursor for the next page, or null when the list is exhausted.
+
+    Address:
+      type: object
+      required: [name1, zip, city]
+      properties:
+        name1: { type: string, description: Primary name line. }
+        street: { type: string, description: Street name (combined with house_number). }
+        house_number: { type: string, description: House number (combined with street). }
+        zip: { type: string, description: Postal code (PLZ). }
+        city: { type: string, description: City (Ort). }
+
+    CreateShipmentInput:
+      type: object
+      required: [sender_address, receiver_address]
+      properties:
+        sender_address: { $ref: "#/components/schemas/Address" }
+        receiver_address: { $ref: "#/components/schemas/Address" }
+        weight:
+          type: number
+          description: Weight in kg. Defaults to 1.0 if omitted.
+        ref_number:
+          type: string
+          description: Customer reference stamped on the order.
+        order_number:
+          type: string
+          description: Internal order number; used as reference fallback.
+
+    Shipment:
+      type: object
+      description: |
+        A courier shipment. Every field mirrors what the production scraper
+        extracts from an OPAL shipment detail page (see parseOpalDetail). String
+        fields default to "" and numeric fields to null when the portal does not
+        provide a value. `ocu_number` is a canonical alias of `tracking_number`.
+      required:
+        - ocu_number
+        - tracking_number
+        - hwb_number
+      properties:
+        ocu_number:
+          type: string
+          description: Canonical shipment id — the portal "SendungsNr" (e.g. "OCU-123456"). Alias of tracking_number; used as the REST path id.
+        tracking_number:
+          type: string
+          description: SendungsNr exactly as the portal emits it (matched as OCU[-\d]+).
+        hwb_number:
+          type: string
+          description: House waybill number (HWB) — a 12-digit code or an OCU-prefixed code.
+        product_type:
+          type: string
+          description: Order type (Auftragsart).
+        reference:
+          type: string
+          description: Customer reference (Referenz).
+        created_at:
+          type: string
+          description: Creation timestamp ("erfasst am … Uhr"), portal-formatted.
+        created_by:
+          type: string
+          description: Creating user ("erfasst durch").
+        pickup_name:
+          type: string
+          description: Pickup — primary name (Abholung / Name1).
+        pickup_name2:
+          type: string
+          description: Pickup — secondary name (Name2).
+        pickup_contact:
+          type: string
+          description: Pickup — contact person (Ansprechpartner).
+        pickup_phone:
+          type: string
+          description: Pickup — phone (Telefon).
+        pickup_email:
+          type: string
+          description: Pickup — email (Mail).
+        pickup_street:
+          type: string
+          description: Pickup — street and house number (Straße/Hs).
+        pickup_zip:
+          type: string
+          description: Pickup — postal code, parsed from LKZ-Land.
+        pickup_city:
+          type: string
+          description: Pickup — city, parsed from LKZ-Land.
+        pickup_country:
+          type: string
+          description: Pickup — 2-letter country code parsed from LKZ-Land; defaults to "DE".
+        pickup_note:
+          type: string
+          description: Pickup — free-text note (Hinweis).
+        pickup_date:
+          type: string
+          description: Pickup date (Abholtermin), DD.MM.YYYY.
+        pickup_time_from:
+          type: string
+          description: Pickup window start (HH:MM).
+        pickup_time_to:
+          type: string
+          description: Pickup window end (HH:MM).
+        pickup_vehicle:
+          type: string
+          description: Vehicle type (Fahrzeug).
+        delivery_name:
+          type: string
+          description: Delivery — primary name (Zustellung / Name1).
+        delivery_name2:
+          type: string
+          description: Delivery — secondary name (Name2).
+        delivery_contact:
+          type: string
+          description: Delivery — contact person (Ansprechpartner).
+        delivery_phone:
+          type: string
+          description: Delivery — phone (Telefon).
+        delivery_email:
+          type: string
+          description: Delivery — email (Mail).
+        delivery_street:
+          type: string
+          description: Delivery — street and house number (Straße/Hs).
+        delivery_zip:
+          type: string
+          description: Delivery — postal code, parsed from LKZ-Land.
+        delivery_city:
+          type: string
+          description: Delivery — city, parsed from LKZ-Land.
+        delivery_country:
+          type: string
+          description: Delivery — 2-letter country code parsed from LKZ-Land; defaults to "DE".
+        delivery_note:
+          type: string
+          description: Delivery — free-text note (Hinweis).
+        delivery_date:
+          type: string
+          description: Delivery date (Zustelltermin), DD.MM.YYYY.
+        delivery_time_from:
+          type: string
+          description: Delivery window start (HH:MM).
+        delivery_time_to:
+          type: string
+          description: Delivery window end (HH:MM).
+        package_count:
+          type: [integer, "null"]
+          description: Number of packages (colli); null if not parsed.
+        weight:
+          type: [number, "null"]
+          description: Weight in kg; null if not parsed.
+        value:
+          type: [number, "null"]
+          description: Declared value in EUR (Wert … EUR); null if not parsed.
+        description:
+          type: string
+          description: Goods description.
+        dimensions:
+          type: string
+          description: Dimensions "LxBxH" in cm, assembled from "L: … B: … H: …".
+        status:
+          type: string
+          description: Last status (Zugestellt, Abgeholt, Storniert, AKTIV, geliefert, ausgeliefert, Fehlanfahrt, …).
+        status_date:
+          type: string
+          description: Status date (DD.MM.YY).
+        status_time:
+          type: string
+          description: Status time (HH:MM).
+        receiver:
+          type: string
+          description: Receiver / signer captured with the status, if any.

@@ -1,0 +1,8 @@
+node_modules/
+.env
+dist/
+logs/
+*.log
+
+# Playwright persistent browser profile (created at runtime by the scraper driver)
+.browser-data/
