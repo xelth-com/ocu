@@ -1,8 +1,10 @@
-import { UpstreamPortalError } from "../src/errors.js";
+import { NotFoundError, UpstreamPortalError } from "../src/errors.js";
 import { decodeCursor } from "../src/cursor.js";
 import { emptyShipment } from "../src/drivers/opal-parse.js";
 import type {
   CreateShipmentInput,
+  DocumentResult,
+  DocumentType,
   HealthResult,
   ListResult,
   OcuSource,
@@ -52,5 +54,13 @@ export class FakeDriver implements OcuSource {
     const s = sampleShipment("OCU-2002");
     s.reference = input.ref_number ?? input.order_number ?? "";
     return s;
+  }
+
+  async getDocument(id: string, type: DocumentType): Promise<DocumentResult> {
+    if (this.opts.failUpstream) throw new UpstreamPortalError("portal down");
+    if (id !== "OCU-1001") throw new NotFoundError(`No shipment with ocu_number "${id}".`);
+    // A tiny but valid-looking PDF payload — enough to assert bytes flow through.
+    const bytes = Buffer.from(`%PDF-1.4\n% fake ${type} for ${id}\n%%EOF\n`, "latin1");
+    return { contentType: "application/pdf", bytes, filename: `${id}-${type}.pdf` };
   }
 }

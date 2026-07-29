@@ -1,10 +1,13 @@
 import { chromium } from "playwright";
 import type { BrowserContext, Frame, Page } from "playwright";
-import { UpstreamPortalError } from "../errors.js";
+import { NotFoundError, UpstreamPortalError } from "../errors.js";
 import { decodeCursor, encodeCursor } from "../cursor.js";
 import { emptyShipment, parseOpalDetail } from "./opal-parse.js";
+import { OpalHttpSession } from "./opal-http.js";
 import type {
   CreateShipmentInput,
+  DocumentResult,
+  DocumentType,
   HealthResult,
   ListResult,
   OcuSource,
@@ -16,9 +19,22 @@ export interface ScraperConfig {
   username: string;
   password: string;
   userDataDir: string;
+  /** Account mandant id ("ma"). Optional — used as a fallback for document
+   *  retrieval when the caller passes a raw orderval and the shipment's own
+   *  detail page can't be consulted for it. Never hardcode a real value. */
+  mandant?: string;
+  /** Account client id ("cl"). Same role as `mandant`. */
+  client?: string;
   /** Run the browser headed with slowMo — for local debugging only. */
   debug?: boolean;
 }
+
+/** OCU document type → OPAL portal `type` param. */
+const DOC_TYPE_TO_PORTAL: Record<DocumentType, "hwb" | "order" | "ab"> = {
+  label: "hwb",
+  order: "order",
+  confirmation: "ab",
+};
 
 /** Upper bound on how many recent shipments getShipment() will scan when the
  *  portal offers no direct by-id lookup. Mirrors the API's MAX_LIMIT. */
@@ -43,6 +59,8 @@ export class ScraperSource implements OcuSource {
   /** Serialises browser access — one portal session at a time, exactly like the
    *  original `browserLock`. */
   private lock: Promise<void> = Promise.resolve();
+  /** Lazily-created plain-HTTP session for the browser-free PDF path. */
+  private http?: OpalHttpSession;
 
   constructor(cfg: ScraperConfig) {
     this.cfg = cfg;
@@ -153,6 +171,60 @@ export class ScraperSource implements OcuSource {
     });
   }
 
+  /**
+   * Fetch a shipment's PDF over plain HTTP — no browser. This is the payoff of
+   * the recon (docs/VERSANDAUFTRAG_FLOW.md §C/§D): the PDF chain is cookie-auth
+   * GETs only, so it runs through `OpalHttpSession` rather than Playwright.
+   *
+   * Inputs (orderval/ma/cl) are resolved two ways:
+   *   • a raw internal orderval (`^\d+$`) → used directly; ma/cl come from the
+   *     configured account constants (OPAL_MANDANT / OPAL_CLIENT).
+   *   • otherwise the id is treated as an ocu_number and looked up via
+   *     getShipment(), which now carries orderval/mandant/client_id parsed from
+   *     the detail page's PrintDocs call.
+   */
+  async getDocument(id: string, type: DocumentType): Promise<DocumentResult> {
+    const portalType = DOC_TYPE_TO_PORTAL[type];
+
+    let orderval: string | undefined;
+    let ma: string | undefined = this.cfg.mandant;
+    let cl: string | undefined = this.cfg.client;
+
+    if (/^\d+$/.test(id)) {
+      orderval = id;
+    } else {
+      const shipment = await this.getShipment(id);
+      if (!shipment) throw new NotFoundError(`No shipment with ocu_number "${id}".`);
+      orderval = shipment.orderval;
+      ma = shipment.mandant ?? ma;
+      cl = shipment.client_id ?? cl;
+      if (!orderval) {
+        throw new NotFoundError(
+          `Shipment "${id}" has no internal orderval — the detail page exposed no ` +
+            `PrintDocs link, so its documents cannot be addressed.`,
+        );
+      }
+    }
+
+    if (!ma || !cl) {
+      throw new UpstreamPortalError(
+        "OPAL mandant/client not resolved — pass an ocu_number whose detail page " +
+          "carries them, or configure OPAL_MANDANT / OPAL_CLIENT for raw-orderval lookups.",
+      );
+    }
+
+    if (!this.http) {
+      this.http = new OpalHttpSession({
+        baseUrl: this.cfg.url || "https://opal-kurier.de",
+        username: this.cfg.username,
+        password: this.cfg.password,
+      });
+    }
+
+    const pdf = await this.http.getDocument({ orderval, ma, cl, portalType });
+    return { contentType: pdf.contentType, bytes: pdf.bytes, filename: pdf.filename };
+  }
+
   // ── internal: fetch/iterate the Auftragsliste (ported exactly) ────────────
   private runFetch(opts: { target: number; findId?: string }): Promise<Shipment[]> {
     const { target, findId } = opts;
@@ -255,13 +327,19 @@ export class ScraperSource implements OcuSource {
           continue;
         }
 
-        const text = await mainFrame.evaluate(() => document.body.innerText);
-        if (!text.includes("zur Liste zurück")) {
+        // Capture innerText (proven parse anchors) AND innerHTML — the latter
+        // carries the `PrintDocs(...)` call the detail parser reads the internal
+        // orderval/ma/cl from (innerText strips attributes).
+        const detail = await mainFrame.evaluate(() => ({
+          text: document.body.innerText,
+          html: document.body.innerHTML,
+        }));
+        if (!detail.text.includes("zur Liste zurück")) {
           currentRow++;
           continue;
         }
 
-        const order = parseOpalDetail(text);
+        const order = parseOpalDetail(detail.text, detail.html);
         if (order.tracking_number || order.hwb_number) {
           orders.push(order);
           // Early exit for getShipment(): stop as soon as we see the target id.

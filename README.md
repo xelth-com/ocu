@@ -50,6 +50,8 @@ Valid keys come from the `OCU_API_KEYS` env var (comma-separated). See
 | `GET /v1/shipments?limit=50&cursor=<opaque>` | List shipments, newest first. `limit` default 50, max 200. Returns `{ shipments, next_cursor }`. |
 | `GET /v1/shipments/{ocu_number}` | One shipment, or 404. |
 | `POST /v1/shipments` | Create a shipment; returns `201` with the created `Shipment`. |
+| `GET /v1/shipments/{ocu_number}/documents/{type}` | Retrieve a document PDF (`type` ∈ `label`, `order`, `confirmation`). |
+| `GET /v1/shipments/{ocu_number}/label` | Convenience alias for `documents/label`. |
 
 **Errors** are always `{ "error": { "code", "message" } }` with the matching
 HTTP status. Driver failures (portal down, login failed, layout changed) map to
@@ -96,6 +98,8 @@ docker compose up --build
 | `OPAL_USERNAME` | — | Portal login (scraper driver). |
 | `OPAL_PASSWORD` | — | Portal password (scraper driver). |
 | `OPAL_USER_DATA_DIR` | `.browser-data` | Playwright persistent profile dir. |
+| `OPAL_MANDANT` | — | Optional account "ma" id; only needed to fetch documents by a raw internal orderval. |
+| `OPAL_CLIENT` | — | Optional account "cl" id; pairs with `OPAL_MANDANT`. |
 
 Never commit `.env`. Configuration is strictly via environment.
 
@@ -134,9 +138,34 @@ curl -s -X POST -H "Authorization: Bearer $KEY" \
   http://localhost:38300/v1/shipments
 ```
 
----
+### Documents (PDF)
 
-## Architecture
+Each shipment can produce a PDF: its **label** (Versandlabel), the **order**
+printout, or the **confirmation** (Auftragsbestätigung).
+
+```bash
+# Fetch the label as a PDF (inline) and save it
+curl -s -H "Authorization: Bearer $KEY" \
+  "http://localhost:38300/v1/shipments/OCU-123456/label" \
+  -o label.pdf
+
+# Same, via the generic endpoint (type ∈ label | order | confirmation)
+curl -s -H "Authorization: Bearer $KEY" \
+  "http://localhost:38300/v1/shipments/OCU-123456/documents/confirmation" \
+  -o confirmation.pdf
+```
+
+The response is `Content-Type: application/pdf` with
+`Content-Disposition: inline; filename="OCU-123456-label.pdf"`. Unknown shipment
+→ `404`; portal failure → `502 upstream_portal_error`.
+
+**This path runs over plain HTTP — no headless browser.** The `scraper` driver
+logs in and walks the portal's three-hop print chain (cookie-authenticated GETs
+only) with Node's built-in `fetch` and a small cookie jar. It is concrete
+evidence that the driver layer can shrink toward pure HTTP as more of the portal
+is reverse-engineered — exactly the migration path toward the native `db`
+driver. (Resolving an `ocu_number` to its internal order id still uses the
+scraper today; fetching by a raw internal orderval is fully browser-free.)
 
 ```
 HTTP (Fastify)  →  auth (Bearer)  →  route  →  OcuSource driver
@@ -152,6 +181,7 @@ interface OcuSource {
   listShipments(limit: number, cursor?: string): Promise<ListResult>;
   getShipment(id: string): Promise<Shipment | null>;
   createShipment(input: CreateShipmentInput): Promise<Shipment>;
+  getDocument(id: string, type: DocumentType): Promise<DocumentResult>;
   health(): Promise<HealthResult>;
 }
 ```

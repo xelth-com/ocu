@@ -1,12 +1,12 @@
 import { argv } from "node:process";
 import { pathToFileURL } from "node:url";
-import Fastify, { type FastifyInstance } from "fastify";
+import Fastify, { type FastifyInstance, type FastifyReply } from "fastify";
 import { loadConfig, loadDotEnv } from "./config.js";
 import { makeAuthHook } from "./auth.js";
 import { ApiError, InvalidRequestError, NotFoundError } from "./errors.js";
 import { parseLimit } from "./cursor.js";
 import { createDriver } from "./drivers/index.js";
-import type { CreateShipmentInput, OcuSource } from "./drivers/types.js";
+import type { CreateShipmentInput, DocumentType, OcuSource } from "./drivers/types.js";
 
 export interface ServerDeps {
   driver: OcuSource;
@@ -51,6 +51,43 @@ function validateCreateInput(body: unknown): CreateShipmentInput {
     ref_number: typeof b.ref_number === "string" ? b.ref_number : undefined,
     order_number: typeof b.order_number === "string" ? b.order_number : undefined,
   };
+}
+
+const DOCUMENT_TYPES = ["label", "order", "confirmation"] as const;
+
+/** Validate the `:type` path segment into a DocumentType (→ 400 otherwise). */
+function parseDocumentType(raw: string): DocumentType {
+  if ((DOCUMENT_TYPES as readonly string[]).includes(raw)) {
+    return raw as DocumentType;
+  }
+  throw new InvalidRequestError(
+    `Invalid document type "${raw}" — expected one of ${DOCUMENT_TYPES.join(", ")}.`,
+  );
+}
+
+/** Header-safe filename token: keep only benign characters. */
+function safeFilenamePart(s: string): string {
+  return s.replace(/[^A-Za-z0-9._-]+/g, "_");
+}
+
+/**
+ * Resolve a shipment document via the driver and stream it as a PDF, with the
+ * standard inline Content-Disposition. Driver errors (NotFound / Upstream) keep
+ * the JSON envelope because they are thrown, not caught, here.
+ */
+async function sendDocument(
+  driver: OcuSource,
+  reply: FastifyReply,
+  ocu_number: string,
+  type: DocumentType,
+): Promise<void> {
+  const doc = await driver.getDocument(ocu_number, type);
+  const filename = `${safeFilenamePart(ocu_number)}-${type}.pdf`;
+  reply
+    .status(200)
+    .header("Content-Type", doc.contentType || "application/pdf")
+    .header("Content-Disposition", `inline; filename="${filename}"`)
+    .send(doc.bytes);
 }
 
 /**
@@ -120,6 +157,18 @@ export function buildServer(deps: ServerDeps): FastifyInstance {
       const input = validateCreateInput(req.body);
       const shipment = await deps.driver.createShipment(input);
       reply.status(201).send(shipment);
+    });
+
+    // Document (PDF) retrieval. `type` ∈ label | order | confirmation.
+    scope.get("/v1/shipments/:ocu_number/documents/:type", async (req, reply) => {
+      const { ocu_number, type } = req.params as { ocu_number: string; type: string };
+      await sendDocument(deps.driver, reply, ocu_number, parseDocumentType(type));
+    });
+
+    // Convenience alias: the label is the document most callers want.
+    scope.get("/v1/shipments/:ocu_number/label", async (req, reply) => {
+      const { ocu_number } = req.params as { ocu_number: string };
+      await sendDocument(deps.driver, reply, ocu_number, "label");
     });
   });
 

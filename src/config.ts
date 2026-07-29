@@ -41,6 +41,10 @@ export interface AppConfig {
     username: string;
     password: string;
     userDataDir: string;
+    /** Account mandant ("ma") — optional; enables raw-orderval document lookups. */
+    mandant?: string;
+    /** Account client ("cl") — optional; enables raw-orderval document lookups. */
+    client?: string;
   };
   version: string;
 }
@@ -84,6 +88,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
       username: env.OPAL_USERNAME ?? "",
       password: env.OPAL_PASSWORD ?? "",
       userDataDir: env.OPAL_USER_DATA_DIR ?? ".browser-data",
+      mandant: env.OPAL_MANDANT || undefined,
+      client: env.OPAL_CLIENT || undefined,
     },
     version: readPackageVersion(),
   };

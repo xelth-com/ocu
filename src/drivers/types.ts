@@ -17,6 +17,20 @@ export interface Shipment {
   tracking_number: string;
   /** House waybill number ("HWB"): a 12-digit code or an OCU-prefixed code. */
   hwb_number: string;
+
+  // ── Internal portal ids (document retrieval only) ───────────────────────────
+  // These are the portal's own machine ids, needed only to address the shipment's
+  // PDFs (see `getDocument`). They are NOT public keys — `ocu_number` /
+  // `tracking_number` remain the stable, client-facing identifiers. All three are
+  // extracted from the detail page's `PrintDocs(type, ma, cl, ref, 'KEY')` call
+  // and are left `undefined` when the portal did not expose them.
+  /** Internal order id ("orderval", e.g. "17032005") — the `ref` argument of
+   *  `PrintDocs`. This, not the OCU tracking number, keys the PDF endpoints. */
+  orderval?: string;
+  /** Account mandant id ("ma", e.g. "603") — the `ma` argument of `PrintDocs`. */
+  mandant?: string;
+  /** Account client id ("cl", e.g. "60952") — the `cl` argument of `PrintDocs`. */
+  client_id?: string;
   /** Order type ("Auftragsart"). */
   product_type: string;
   /** Customer reference ("Referenz"). */
@@ -124,6 +138,23 @@ export interface HealthResult {
 }
 
 /**
+ * Kinds of PDF a shipment can produce. These are the OCU-facing names; each
+ * maps to an OPAL portal `type` param inside the driver (label→`hwb`,
+ * order→`order`, confirmation→`ab`).
+ */
+export type DocumentType = "label" | "order" | "confirmation";
+
+/** A retrieved document: its bytes plus enough metadata to serve it. */
+export interface DocumentResult {
+  /** MIME type, always "application/pdf" for the current portal documents. */
+  contentType: string;
+  /** The raw document bytes. */
+  bytes: Buffer;
+  /** Suggested download filename, if the driver derived one. */
+  filename?: string;
+}
+
+/**
  * The one interface the whole product hangs on. Today implemented by
  * `ScraperSource` (Playwright against the portal); tomorrow by `DbSource`
  * (direct SQL against OPAL's own database). The REST contract never changes
@@ -137,6 +168,11 @@ export interface OcuSource {
   getShipment(id: string): Promise<Shipment | null>;
   /** Create a shipment; returns the created shipment (at minimum its numbers). */
   createShipment(input: CreateShipmentInput): Promise<Shipment>;
+  /** Fetch a shipment's PDF document. `id` is normally an `ocu_number` (the
+   *  driver resolves the internal ids it needs); some drivers also accept a raw
+   *  internal orderval. Throws NotFoundError when the document cannot be located
+   *  and UpstreamPortalError on a portal failure. */
+  getDocument(id: string, type: DocumentType): Promise<DocumentResult>;
   /** Cheap liveness signal — reports which driver is active. Must not require a
    *  live upstream round-trip. */
   health(): Promise<HealthResult>;

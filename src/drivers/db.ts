@@ -1,5 +1,7 @@
 import type {
   CreateShipmentInput,
+  DocumentResult,
+  DocumentType,
   HealthResult,
   ListResult,
   OcuSource,
@@ -84,5 +86,11 @@ export class DbSource implements OcuSource {
 
   async createShipment(_input: CreateShipmentInput): Promise<Shipment> {
     return this.notImplemented("createShipment");
+  }
+
+  async getDocument(_id: string, _type: DocumentType): Promise<DocumentResult> {
+    // In the native driver a document would be produced from the order tables
+    // (e.g. a stored/rendered label blob), not scraped through a browser.
+    return this.notImplemented("getDocument");
   }
 }

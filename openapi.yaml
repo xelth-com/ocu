@@ -123,6 +123,72 @@ paths:
         "404": { $ref: "#/components/responses/NotFound" }
         "502": { $ref: "#/components/responses/UpstreamError" }
 
+  /v1/shipments/{ocu_number}/documents/{type}:
+    get:
+      tags: [shipments]
+      summary: Retrieve a shipment document (PDF)
+      description: |
+        Returns the shipment's document as `application/pdf`, served inline.
+
+        The `scraper` driver fetches this over **plain HTTP** (no headless
+        browser): a cookie-authenticated session follows the portal's verified
+        three-hop print chain and streams the resulting PDF back. The internal
+        ids this needs (`orderval`/`mandant`/`client_id`) are resolved from the
+        shipment; alternatively a raw internal orderval may be passed as
+        `{ocu_number}` when the account's `mandant`/`client` are configured.
+      parameters:
+        - name: ocu_number
+          in: path
+          required: true
+          description: The shipment's `ocu_number` (portal SendungsNr), or a raw internal orderval.
+          schema:
+            type: string
+        - name: type
+          in: path
+          required: true
+          description: Which document to fetch.
+          schema:
+            type: string
+            enum: [label, order, confirmation]
+      responses:
+        "200":
+          description: The document, as a PDF.
+          content:
+            application/pdf:
+              schema:
+                type: string
+                format: binary
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "502": { $ref: "#/components/responses/UpstreamError" }
+
+  /v1/shipments/{ocu_number}/label:
+    get:
+      tags: [shipments]
+      summary: Retrieve a shipment's label (PDF)
+      description: |
+        Convenience alias for `GET /v1/shipments/{ocu_number}/documents/label`.
+        Returns the waybill/label ("Versandlabel") as `application/pdf`, inline.
+      parameters:
+        - name: ocu_number
+          in: path
+          required: true
+          description: The shipment's `ocu_number` (portal SendungsNr), or a raw internal orderval.
+          schema:
+            type: string
+      responses:
+        "200":
+          description: The label, as a PDF.
+          content:
+            application/pdf:
+              schema:
+                type: string
+                format: binary
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "502": { $ref: "#/components/responses/UpstreamError" }
+
 components:
   securitySchemes:
     bearerAuth:
@@ -246,6 +312,25 @@ components:
         hwb_number:
           type: string
           description: House waybill number (HWB) — a 12-digit code or an OCU-prefixed code.
+        orderval:
+          type: string
+          description: >
+            Internal portal order id ("orderval", e.g. "17032005") — the key the
+            PDF endpoints address. NOT a public identifier; present only when the
+            detail page exposed it. Use `ocu_number`/`tracking_number` as the
+            client-facing keys.
+        mandant:
+          type: string
+          description: >
+            Internal account mandant id ("ma", e.g. "603"). Present only when the
+            detail page exposed it. Needed together with `orderval`/`client_id`
+            for document retrieval.
+        client_id:
+          type: string
+          description: >
+            Internal account client id ("cl", e.g. "60952"). Present only when the
+            detail page exposed it. Needed together with `orderval`/`mandant` for
+            document retrieval.
         product_type:
           type: string
           description: Order type (Auftragsart).

@@ -44,5 +44,6 @@ describe("DbSource stub", () => {
         receiver_address: { name1: "B", zip: "2", city: "Y" },
       }),
     ).rejects.toThrow(/not implemented/i);
+    await expect(db.getDocument("OCU-1", "label")).rejects.toThrow(/not implemented/i);
   });
 });

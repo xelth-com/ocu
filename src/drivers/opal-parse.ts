@@ -57,15 +57,51 @@ export function emptyShipment(): Shipment {
   };
 }
 
+/** The three internal portal ids carried by a `PrintDocs(...)` call. */
+export interface PrintDocsIds {
+  /** `ref` argument — the internal orderval (e.g. "17032005"). */
+  orderval?: string;
+  /** `ma` argument — the account mandant (e.g. "603"). */
+  mandant?: string;
+  /** `cl` argument — the account client (e.g. "60952"). */
+  client_id?: string;
+}
+
+/**
+ * Extract the internal portal ids from a detail page's print link. The detail
+ * page carries three `PrintDocs(type, ma, cl, ref, 'KEY')` calls (order / hwb /
+ * ab) that all share the same `ma`/`cl`/`ref`; we read them off the `hwb`
+ * (Versandlabel) one. The match tolerates single or double quotes and arbitrary
+ * whitespace between arguments. Returns an empty object when no such call is
+ * present (e.g. the input is plain innerText, which carries no attributes) —
+ * this never throws.
+ *
+ * NB: `PrintDocs` lives in element attributes/scripts, so this only finds
+ * anything when fed raw HTML, not rendered innerText.
+ */
+export function extractPrintDocsIds(source: string): PrintDocsIds {
+  const m = source.match(
+    /PrintDocs\(\s*['"]hwb['"]\s*,\s*['"]([^'"]+)['"]\s*,\s*['"]([^'"]+)['"]\s*,\s*['"]([^'"]+)['"]\s*,\s*['"]KEY['"]\s*\)/i,
+  );
+  if (!m) return {};
+  return { mandant: m[1], client_id: m[2], orderval: m[3] };
+}
+
 /**
  * Parse the innerText of an OPAL shipment detail page into a Shipment.
  *
  * PORTED VERBATIM from the production scraper's `parseOpalDetail`: the regexes,
  * German section anchors ("Abholung"/"Zustellung"/"Abholtermin"/…) and window
  * offsets are proven against the live portal and MUST NOT be "cleaned up".
- * The only addition is setting `ocu_number = tracking_number` at the end.
+ *
+ * Additions over the verbatim port:
+ *   • `ocu_number` is set to `tracking_number` at the end.
+ *   • the optional `html` argument is scanned for the `PrintDocs(...)` call to
+ *     recover the internal `orderval`/`mandant`/`client_id` (needed to address
+ *     the shipment's PDFs). innerText alone carries no attributes, so pass the
+ *     page HTML when these ids are wanted; absence leaves them undefined.
  */
-export function parseOpalDetail(text: string): Shipment {
+export function parseOpalDetail(text: string, html?: string): Shipment {
   const order = emptyShipment();
 
   const lines = text
@@ -219,6 +255,14 @@ export function parseOpalDetail(text: string): Shipment {
 
   // Canonical id alias: the portal's SendungsNr is our ocu_number.
   order.ocu_number = order.tracking_number;
+
+  // Internal ids for PDF retrieval — read from the raw HTML's PrintDocs call
+  // (falls back to `text` so a caller can pass a single HTML string). Absent →
+  // stays undefined, never throws.
+  const ids = extractPrintDocsIds(html ?? text);
+  if (ids.orderval) order.orderval = ids.orderval;
+  if (ids.mandant) order.mandant = ids.mandant;
+  if (ids.client_id) order.client_id = ids.client_id;
 
   return order;
 }

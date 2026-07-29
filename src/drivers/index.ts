@@ -21,6 +21,8 @@ export function createDriver(cfg: AppConfig): OcuSource {
         username: cfg.opal.username,
         password: cfg.opal.password,
         userDataDir: cfg.opal.userDataDir,
+        mandant: cfg.opal.mandant,
+        client: cfg.opal.client,
         debug: process.env.OPAL_DEBUG === "1",
       });
     case "db":
